@@ -171,23 +171,25 @@ class ZygiskModule : public zygisk::ModuleBase {
 };
 }  // namespace lspd
 
-/* Optimized: Keep libsqlite loaded, cache symbols, and use v2 close */
+// Move mutex to global scope to prevent C++ magic static initialization races
+static std::mutex sqlite_init_mutex;
+
+/* Optimized: Global mutex, Read-Only DB, and explicit initialization */
 static bool is_targeted_by_any_module(const char *package_name, int user_id) {
     // Cache pointers statically
     static void* lib = nullptr;
-    static int (*sqlite3_open)(const char *, void **) = nullptr;
+    static int (*sqlite3_initialize)(void) = nullptr;
+    static int (*sqlite3_open_v2)(const char *, void **, int, const char *) = nullptr;
     static int (*sqlite3_prepare_v2)(void *, const char *, int, void **, const char **) = nullptr;
     static int (*sqlite3_bind_text)(void *, int, const char *, int, void (*)(void *)) = nullptr;
     static int (*sqlite3_bind_int)(void *, int, int) = nullptr;
     static int (*sqlite3_step)(void *) = nullptr;
     static int (*sqlite3_finalize)(void *) = nullptr;
-    static int (*sqlite3_close_v2)(void *) = nullptr; // Updated to v2
-
-    static std::mutex init_mutex;
+    static int (*sqlite3_close_v2)(void *) = nullptr; 
 
     // Initialize once in a thread-safe manner
     {
-        std::lock_guard<std::mutex> lock(init_mutex);
+        std::lock_guard<std::mutex> lock(sqlite_init_mutex);
         if (!lib) {
             lib = dlopen("libsqlite.so", RTLD_NOW | RTLD_LOCAL);
             if (!lib) lib = dlopen("libsqlite3.so", RTLD_NOW | RTLD_LOCAL);
@@ -196,27 +198,36 @@ static bool is_targeted_by_any_module(const char *package_name, int user_id) {
                 return false;
             }
 
-            sqlite3_open = (int (*)(const char *, void **))dlsym(lib, "sqlite3_open");
+            sqlite3_initialize = (int (*)(void))dlsym(lib, "sqlite3_initialize");
+            sqlite3_open_v2 = (int (*)(const char *, void **, int, const char *))dlsym(lib, "sqlite3_open_v2");
             sqlite3_prepare_v2 = (int (*)(void *, const char *, int, void **, const char **))dlsym(lib, "sqlite3_prepare_v2");
             sqlite3_bind_text = (int (*)(void *, int, const char *, int, void (*)(void *)))dlsym(lib, "sqlite3_bind_text");
             sqlite3_bind_int = (int (*)(void *, int, int))dlsym(lib, "sqlite3_bind_int");
             sqlite3_step = (int (*)(void *))dlsym(lib, "sqlite3_step");
             sqlite3_finalize = (int (*)(void *))dlsym(lib, "sqlite3_finalize");
-            sqlite3_close_v2 = (int (*)(void *))dlsym(lib, "sqlite3_close_v2"); // Updated to v2
+            sqlite3_close_v2 = (int (*)(void *))dlsym(lib, "sqlite3_close_v2"); 
 
-            if (!sqlite3_open || !sqlite3_prepare_v2 || !sqlite3_bind_text || !sqlite3_bind_int || !sqlite3_step || !sqlite3_finalize || !sqlite3_close_v2) {
+            if (!sqlite3_open_v2 || !sqlite3_prepare_v2 || !sqlite3_bind_text || !sqlite3_bind_int || !sqlite3_step || !sqlite3_finalize || !sqlite3_close_v2) {
                 LOGE("Missing sqlite symbols");
                 lib = nullptr; // Reset to allow retry if needed
                 return false;
+            }
+
+            // Explicitly initialize SQLite internals while holding the global lock
+            // This prevents concurrent initialization crashes in libsqlite.so
+            if (sqlite3_initialize) {
+                sqlite3_initialize();
             }
         }
     }
 
     void *db = NULL;
     const char *db_path = "/data/adb/lspd/config/modules_config.db";
-    if (sqlite3_open(db_path, &db) != 0 || db == NULL) {
+    
+    // 1 = SQLITE_OPEN_READONLY. Prevents WAL lock starvation across threads.
+    if (sqlite3_open_v2(db_path, &db, 1, NULL) != 0 || db == NULL) {
         LOGE("Failed to open sqlite db: %s", db_path);
-        if (db) sqlite3_close_v2(db); // Updated to v2
+        if (db) sqlite3_close_v2(db); 
         return false;
     }
 
@@ -225,28 +236,28 @@ static bool is_targeted_by_any_module(const char *package_name, int user_id) {
     
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != 0) {
         LOGE("Failed to prepare sqlite statement");
-        if (db) sqlite3_close_v2(db); // Updated to v2
+        if (db) sqlite3_close_v2(db); 
         return false;
     }
 
     if (sqlite3_bind_text(stmt, 1, package_name, (int)strlen(package_name), NULL) != 0) {
         LOGE("Failed to bind package name");
         if (stmt) sqlite3_finalize(stmt);
-        if (db) sqlite3_close_v2(db); // Updated to v2
+        if (db) sqlite3_close_v2(db); 
         return false;
     }
   
     if (sqlite3_bind_int(stmt, 2, user_id) != 0) {
         LOGE("Failed to bind user id");
         if (stmt) sqlite3_finalize(stmt);
-        if (db) sqlite3_close_v2(db); // Updated to v2
+        if (db) sqlite3_close_v2(db); 
         return false;
     }
 
     bool is_targeted = (sqlite3_step(stmt) == 100); /* 100 is SQLITE_ROW */
 
     sqlite3_finalize(stmt);
-    sqlite3_close_v2(db); // Updated to v2
+    sqlite3_close_v2(db); 
 
     return is_targeted;
 }
