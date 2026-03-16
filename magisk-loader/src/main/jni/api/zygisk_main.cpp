@@ -288,7 +288,7 @@ void relsposed_companion(int lib_fd) {
     CLEAN_EXIT();
   }
 
-  if (name_len < 0 || name_len > 4096) {
+  if (name_len == 0 || name_len > 4096) {
     LOGE("Invalid name length: %u", name_len);
 
     CLEAN_EXIT();
