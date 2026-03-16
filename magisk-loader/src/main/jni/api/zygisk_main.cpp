@@ -169,7 +169,6 @@ class ZygiskModule : public zygisk::ModuleBase {
         if (*allowUnload) api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 };
-}  // namespace lspd
 
 // Move mutex to global scope to prevent C++ magic static initialization races
 static std::mutex sqlite_init_mutex;
