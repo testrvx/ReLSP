@@ -195,7 +195,7 @@ void MagiskLoader::OnNativeForkAndSpecializePost(JNIEnv *env, jstring nice_name,
         auto context = Context::ReleaseInstance();
         auto service = Service::ReleaseInstance();
         GetArt(true);
-        LOGD("skipped {}", process_name.get());
+        //LOGD("skipped {}", process_name.get());
         setAllowUnload(true);
     }
 }
