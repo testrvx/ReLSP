@@ -81,6 +81,13 @@ class ZygiskModule : public zygisk::ModuleBase {
             return;
         }
 
+        // FIX 1: Add null check for args->nice_name to prevent SIGSEGV
+        if (!args->nice_name) {
+            close(cfd);
+            should_ignore = true;
+            return;
+        }
+
         uint8_t is_targeted = 1;
 
         const char *name = env_->GetStringUTFChars(args->nice_name, nullptr);
